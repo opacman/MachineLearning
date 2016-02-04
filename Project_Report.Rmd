@@ -1,0 +1,281 @@
+Machine Learning Coursera (Course Project) 
+========================================================
+
+[#1. Load Data and Inspect](#id1)  
+[#2. Feature Selection](#id2)  
+[#3. Data Partitions](#id3)  
+[#4. Modeling – RPART](#id4)  
+[#5. Modeling – LDA](#id5)  
+[#6. Modeling – GBM](#id6)  
+[#7. Modeling – RF](#id7)  
+[#8. Model Stacking](#id8)  
+[#9. Test File Prediction](#id9)  
+
+========================================================
+
+#1. Load Data and Inspect<a id="id1"></a>.
+
+First load basic libraries that will be needed for the project
+
+```{r, message=F, warning=F}
+library (caret)
+library (ggplot2)
+library (rattle)
+```
+
+Then load the training and testing data
+
+```{r}
+setwd ("C:/Users/Public")
+training<-read.csv("pml-training.csv")
+testing<-read.csv("pml-testing.csv")
+```
+
+Conduct a quick inspection of the data
+```
+str(training)
+
+```
+
+The training dataset is large, with 19,622 observations and 160 variables.
+The testing dataset on the other hand only has 20 observations, and 'classe' is not known, thus the testing dataset will not be useful for testing or validation purposes. However the training dataset is large enough to split it into training, testing and validation subsets.  
+
+#2. Feature Selection<a id="id2"></a>.
+
+Explore variables by looking at distributions, missing data, etc. 
+
+```
+summary (training)
+```
+
+There is a large number of variables that are mostly missing or NA on the training data. These variables will not be useful for prediction. Since the empty variables are contiguous, we drop them in ranges using grep.  
+
+```{r}
+training<- training[, -(grep("kurtosis_picth_belt", colnames(training)):grep("var_yaw_belt", colnames(training)))]
+training<- training[, -(grep("var_accel_arm", colnames(training)):grep("var_yaw_arm", colnames(training)))]
+training<- training[, -(grep("kurtosis_roll_arm", colnames(training)):grep("amplitude_yaw_arm", colnames(training)))]
+training<- training[, -(grep("kurtosis_roll_dumbbell", colnames(training)):grep("amplitude_yaw_dumbbell", colnames(training)))]
+training<- training[, -(grep("var_accel_dumbbell", colnames(training)):grep("var_yaw_dumbbell", colnames(training)))]
+training<- training[, -(grep("kurtosis_roll_forearm", colnames(training)):grep("amplitude_yaw_forearm", colnames(training)))]
+training<- training[, -(grep("var_accel_forearm", colnames(training)):grep("var_yaw_forearm", colnames(training)))]
+training<- training[, -(grep("kurtosis_roll_belt", colnames(training)))]
+```
+
+We then do the same for the testing dataset
+
+```{r}
+testing<- testing[, -(grep("kurtosis_picth_belt", colnames(testing)):grep("var_yaw_belt", colnames(testing)))]
+testing<- testing[, -(grep("var_accel_arm", colnames(testing)):grep("var_yaw_arm", colnames(testing)))]
+testing<- testing[, -(grep("kurtosis_roll_arm", colnames(testing)):grep("amplitude_yaw_arm", colnames(testing)))]
+testing<- testing[, -(grep("kurtosis_roll_dumbbell", colnames(testing)):grep("amplitude_yaw_dumbbell", colnames(testing)))]
+testing<- testing[, -(grep("var_accel_dumbbell", colnames(testing)):grep("var_yaw_dumbbell", colnames(testing)))]
+testing<- testing[, -(grep("kurtosis_roll_forearm", colnames(testing)):grep("amplitude_yaw_forearm", colnames(testing)))]
+testing<- testing[, -(grep("var_accel_forearm", colnames(testing)):grep("var_yaw_forearm", colnames(testing)))]
+testing<- testing[, -(grep("kurtosis_roll_belt", colnames(testing)))]
+```
+
+We also drop the index variable, as it is perfectly correlated with classe and won't be a useful predictor in the test dataset. 
+
+```{r fig.width=7, fig.height=6}
+plot(training$X, training$classe)
+```
+```{r}
+training<- training [,-1]
+testing<-testing [,-1]
+```
+
+We then turn all integer variables into numeric
+
+```{r}
+dfTraining<-data.frame(sapply(training[,6:58], as.numeric))
+dfTraining$user_name<-training$user_name
+dfTraining$raw_timestamp_part_1<-as.numeric(training$raw_timestamp_part_1)
+dfTraining$raw_timestamp_part_2<-as.numeric(training$raw_timestamp_part_2)
+dfTraining$cvtd_timestamp<-as.numeric(training$cvtd_timestamp)
+dfTraining$new_window<-training$new_window
+dfTraining$classe<-training$classe
+```
+Do the same for testing dataset
+
+```{r}
+dfTesting<-data.frame(sapply(testing[,6:58], as.numeric))
+dfTesting$user_name<-testing$user_name
+dfTesting$raw_timestamp_part_1<-as.numeric(testing$raw_timestamp_part_1)
+dfTesting$raw_timestamp_part_2<-as.numeric(testing$raw_timestamp_part_2)
+dfTesting$cvtd_timestamp<-as.numeric(testing$cvtd_timestamp)
+dfTesting$new_window<-testing$new_window
+dfTesting$classe<-testing$classe
+```
+
+Now that we have a more manageable number of 59 features, we explore them in detail to identify any other obvious data problems. 
+
+```
+summary (training)
+table(training[,1])
+hist(training[,2])
+hist(training[,3])
+for (i in 6:58) {
+  hist(training[,i])
+}
+```
+
+#3. Data Partitions<a id="id3"></a>.
+
+We rule out any problems and divide the dfTraining data into training, testing and validation datasets
+
+```{r}
+set.seed(1234)
+inBuild <- createDataPartition(y=dfTraining$classe, p=0.7, list=FALSE)
+validation <- dfTraining[-inBuild,]
+buildData <- dfTraining[inBuild,]
+
+set.seed(1234)
+inTrain <- createDataPartition(y=dfTraining$classe, p=0.7, list=FALSE)
+training <- buildData[inTrain,]
+testing <- buildData[-inTrain,]
+```
+```
+dim(training)
+dim(testing)
+dim(validation)
+```
+
+#4. Modeling - RPART<a id="id4"></a>.
+
+We begin the modeling process with a basic rpart classification tree to establish a baseline and evaluate whether we really need a more complex, time-consuming algorithm
+
+```{r, message=F, warning=F}
+set.seed(1234)
+mod1<-train(classe~., method="rpart", data=training)
+fancyRpartPlot(mod1$finalModel)
+pred1<-predict(mod1, testing)
+rpart_result <- confusionMatrix(pred1, testing$classe)
+rpart_result
+```
+rpart shows poor performance on the testing sample. The rpart plot shows that none of the terminal nodes include classe B or D, so the algorithm is not predicting any cases for those two categories. Given its poor performance, we discard this algorithm from further consideration. 
+
+#5. Modeling - LDA<a id="id5"></a>.
+
+We turn to an "lda" model, which is also relevant for categorical outcomes. Since this algorithm will require more processing power, we time it to establish whether the gains in accuracy are worth the extra time 
+
+```{r, message=F, warning=F}
+start<-(Sys.time())
+set.seed(1234)
+modLDA<-train(classe~., method="lda", data=training, verbose = TRUE)
+(Sys.time())-start
+```
+We then evaluate performance of LDA, which shows a much higher accuracy, although still far from perfect
+
+```{r, message=F, warning=F}
+predLDA<-predict(modLDA, testing)
+lda_result <- confusionMatrix(predLDA, testing$classe)
+lda_result$overall['Accuracy']
+```
+
+#6. Modeling - GBM<a id="id6"></a>.
+
+We then train a gbm model
+```{r, message=F, warning=F}
+start<-(Sys.time())
+set.seed(1234)
+modGBM<-train(classe~., method="gbm", data=training, verbose = FALSE)
+(Sys.time())-start
+```
+Evaluate performance of GBM
+
+```{r, message=F, warning=F}
+predGBM<-predict(modGBM, testing)
+gbm_result <- confusionMatrix(predGBM, testing$classe)
+gbm_result$overall['Accuracy']
+```
+
+Things are looking really good now! gbm is close to a perfect prediction. 
+
+#7. Modeling - RF<a id="id7"></a>.
+
+We finally try random forests, which is likely to be the most computing intensive algorithm. Since choosing the right  number of variables to sample randomly at each  split is important for accuracy, we tune mtry using the expand.grid function, with a low number of crossfolds (cv=5) to reduce running time. 
+
+```
+rf.ctrl <- trainControl(method = "cv", number = 5, verboseIter = TRUE,              returnData = TRUE, returnResamp = "all")
+rf.traingrid <- expand.grid(.mtry = seq(5,50,5))
+start<-(Sys.time())
+set.seed(1234)
+mod2<-train(classe~., method="rf", data=training, trControl=rf.ctrl, 
+             tuneGrid = rf.traingrid, varImp=TRUE, importance=TRUE)
+(Sys.time())-start
+```
+(Running time 1.88 hours)
+The tuning parameter settles on mtry=10. We fix mtry to 10 and  run the full rf model with 10 folds to avoid over-fitting.
+
+```{r, message=F, warning=F}
+rf.ctrl <- trainControl(method = "cv", number = 10, verboseIter = FALSE, 
+                        returnData = TRUE, returnResamp = "all")
+rf.traingrid <- expand.grid(.mtry=10)
+start<-(Sys.time())
+set.seed(1234)
+modRF<-train(classe~., method="rf", data=training, trControl=rf.ctrl, 
+            tuneGrid = rf.traingrid, varImp=TRUE, importance=TRUE)
+(Sys.time())-start
+```
+Evaluate performance of RF
+
+```{r}
+predRF<-predict(modRF, testing)
+rf_result <- confusionMatrix(predRF, testing$classe)
+rf_result$overall['Accuracy']
+```
+
+The random forests model outperforms all models so far. "raw_timestamp_part_1" and "cvtd_timestamp" are particularly powerful predictors. 
+
+```{r}
+plot(varImp(modRF), top = 10)
+```
+
+#8. Model Stacking<a id="id8"></a>.
+
+We are close to perfection with our rf and gbm models. However since we used the test data to select them, there is some risk of overfitting. Since the test exercise is unlabeled, we want to maximize predictive power while minimizing out of sample error using an ensemble model with the lda, rf and gbm models and test it on validation data
+
+```{r}
+predDF<-data.frame(predRF,predGBM,predLDA,classe=testing$classe)
+combModFit<-train(classe~., method="rf", data=predDF)
+combPred<-predict(combModFit, newdata=predDF)
+```
+
+To obtain an unbiased estimate of OOB and accuracy, we test the individual models and the final ensemble model on the validation set
+
+```{r}
+predRF<-predict(modRF, validation)
+predGBM<-predict(modGBM, validation)
+predLDA<-predict(modLDA, validation)
+predVDF<-data.frame(predRF, predGBM, predLDA)
+combPred<-predict(combModFit, newdata=predVDF)
+```
+
+Fit indices (on validation set)
+
+```{r}
+resultsLDA<-confusionMatrix(predLDA, validation$classe)
+resultsGBM<-confusionMatrix(predGBM, validation$classe)
+resultsRF<-confusionMatrix(predRF, validation$classe)
+resultsComb<-confusionMatrix(combPred, validation$classe)
+
+finalResults <- data.frame(LDA=NA, GBM=NA, RF=NA, Comb=NA)
+finalResults$LDA<-resultsLDA$overall['Accuracy']
+finalResults$GBM<-resultsGBM$overall['Accuracy']
+finalResults$RF<-resultsRF$overall['Accuracy']
+finalResults$Comb<-resultsComb$overall['Accuracy']
+finalResults
+resultsComb
+```
+
+The final estimated accuracy for the model is 99.63%, or an estimated out of sample error rate of 0.37%.
+
+#9. Test File Prediction<a id="id9"></a>.
+
+We finally predict on the test file for submission using the RF algorithm, which provides the strongest performance.
+
+```{r}
+testPrediction <-predict(modRF, dfTesting)
+write.csv(testPrediction, 'testPrediction.csv')
+testPrediction
+```
